@@ -2,12 +2,15 @@ package server
 
 import (
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/yashgorana/syftbox-go/internal/blob"
 	"github.com/yashgorana/syftbox-go/internal/datasite"
+	"github.com/yashgorana/syftbox-go/internal/server/auth"
 	"github.com/yashgorana/syftbox-go/internal/server/middlewares"
 	blobHandler "github.com/yashgorana/syftbox-go/internal/server/v1/blob"
 	datasiteHandler "github.com/yashgorana/syftbox-go/internal/server/v1/datasite"
@@ -20,11 +23,19 @@ import (
 //go:embed templates/install.sh
 var installScript string
 
+var jwtSecret = os.Getenv("SYFTBOX_JWT_SECRET")
+
 func SetupRoutes(hub *wsV1.WebsocketHub, svcBlob *blob.BlobService, svcDatasite *datasite.DatasiteService) http.Handler {
 	r := gin.Default()
 
 	blob := blobHandler.New(svcBlob)
 	ds := datasiteHandler.New(svcDatasite)
+	auth := auth.New(auth.AuthConfig{
+		JwtSecret:      jwtSecret,
+		JwtExpiry:      168 * time.Hour, // 1 day
+		EmailOTPLength: 8,               // 8 digit
+		EmailOTPExpiry: 5 * time.Minute,
+	})
 
 	r.Use(gzip.Gzip(gzip.BestSpeed))
 	r.Use(cors.Default())
@@ -34,8 +45,11 @@ func SetupRoutes(hub *wsV1.WebsocketHub, svcBlob *blob.BlobService, svcDatasite 
 	r.GET("/install.sh", InstallHeader)
 	r.StaticFS("/releases", http.Dir("./releases"))
 
+	r.GET("/auth/login", auth.Login)
+	r.GET("/auth/verify", auth.Verify)
+
 	v1 := r.Group("/api/v1")
-	v1.Use(middlewares.Auth())
+	v1.Use(middlewares.JwtAuth(jwtSecret)) // enforce auth on v1 routes
 	{
 		// blob
 		v1.GET("/blob/list", blob.List)
