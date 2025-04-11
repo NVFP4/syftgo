@@ -97,9 +97,15 @@ func loadConfig(cmd *cobra.Command) error {
 	}
 
 	// Bind flags to viper
-	viper.BindPFlag("email", cmd.Flags().Lookup("email"))
-	viper.BindPFlag("data_dir", cmd.Flags().Lookup("datadir"))
-	viper.BindPFlag("server_url", cmd.Flags().Lookup("server"))
+	if err := viper.BindPFlag("email", cmd.Flags().Lookup("email")); err != nil {
+		return fmt.Errorf("failed to bind email flag: %w", err)
+	}
+	if err := viper.BindPFlag("data_dir", cmd.Flags().Lookup("datadir")); err != nil {
+		return fmt.Errorf("failed to bind data_dir flag: %w", err)
+	}
+	if err := viper.BindPFlag("server_url", cmd.Flags().Lookup("server")); err != nil {
+		return fmt.Errorf("failed to bind server_url flag: %w", err)
+	}
 
 	// env only
 	viper.SetDefault("apps_enabled", true)

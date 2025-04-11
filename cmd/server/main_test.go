@@ -31,7 +31,9 @@ blob:
 	cmd.Flags().String("config", "", "Path to config file")
 
 	// Set the dummy config file path
-	cmd.Flags().Set("config", dummyConfigFile)
+	if err := cmd.Flags().Set("config", dummyConfigFile); err != nil {
+		t.Fatalf("failed to set config flag: %v", err)
+	}
 
 	// Call loadConfig
 	err = loadConfig(cmd)

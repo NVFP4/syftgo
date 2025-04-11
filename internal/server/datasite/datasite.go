@@ -50,7 +50,9 @@ func (d *DatasiteService) Start(ctx context.Context) error {
 
 	// Load the ACL rulesets
 	start = time.Now()
-	d.aclSvc.LoadRuleSets(ruleSets)
+	if err := d.aclSvc.LoadRuleSets(ruleSets); err != nil {
+		return fmt.Errorf("failed to load ACL rulesets: %w", err)
+	}
 	slog.Debug("acl build", "count", len(ruleSets), "took", time.Since(start))
 
 	// Warm up the ACL cache

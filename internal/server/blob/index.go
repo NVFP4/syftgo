@@ -77,14 +77,18 @@ func (bi *BlobIndex) SetMany(blobs []*BlobInfo) error {
 		`INSERT OR REPLACE INTO blobs (key, etag, size, last_modified) VALUES (?, ?, ?, ?)`,
 	)
 	if err != nil {
-		tx.Rollback()
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("failed to rollback transaction: %w (original error: %v)", rollbackErr, err)
+		}
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 
 	for _, blob := range blobs {
 		_, err := stmt.Exec(blob.Key, blob.ETag, blob.Size, blob.LastModified)
 		if err != nil {
-			tx.Rollback()
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				return fmt.Errorf("failed to rollback transaction: %w (original error: %v)", rollbackErr, err)
+			}
 			return fmt.Errorf("failed to insert blob %s: %w", blob.Key, err)
 		}
 	}
@@ -230,7 +234,9 @@ func (bi *BlobIndex) bulkUpdate(blobs []*BlobInfo) (*bulkUpdateResult, error) {
 	}
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				slog.Error("failed to rollback transaction", "error", rollbackErr)
+			}
 		}
 	}()
 

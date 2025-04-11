@@ -81,25 +81,31 @@ func (b *BlobService) Index() *BlobIndex {
 
 func (b *BlobService) afterPutObject(_ *PutObjectParams, resp *PutObjectResponse) {
 	slog.Info("update index put object", "key", resp.Key)
-	b.index.Set(&BlobInfo{
+	if err := b.index.Set(&BlobInfo{
 		Key:          resp.Key,
 		ETag:         resp.ETag,
 		Size:         resp.Size,
 		LastModified: resp.LastModified.Format(time.RFC3339),
-	})
+	}); err != nil {
+		slog.Error("failed to update index after put", "error", err)
+	}
 }
 
 func (b *BlobService) afterDeleteObjects(req string, _ bool) {
 	slog.Info("update index delete object", "key", req)
-	b.index.Remove(req)
+	if err := b.index.Remove(req); err != nil {
+		slog.Error("failed to update index after delete", "error", err)
+	}
 }
 
 func (b *BlobService) afterCopyObject(req *CopyObjectParams, resp *CopyObjectResponse) {
 	slog.Info("update index copy object", "dest", req.DestinationKey)
-	b.index.Set(&BlobInfo{
+	if err := b.index.Set(&BlobInfo{
 		Key:          req.DestinationKey,
 		ETag:         resp.ETag,
 		Size:         0,
 		LastModified: resp.LastModified.Format(time.RFC3339),
-	})
+	}); err != nil {
+		slog.Error("failed to update index after copy", "error", err)
+	}
 }

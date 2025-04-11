@@ -20,7 +20,7 @@ gen-certs:
     mkdir certs
     mkcert -install -cert-file certs/cert.pem -key-file certs/cert.key localhost 127.0.0.1
 
-[group('dev')] 
+[group('dev')]
 run-minio:
     docker run -d \
       --name syftbox-minio \
@@ -44,15 +44,44 @@ ssh-minio:
 
 [group('dev')]
 run-server *ARGS: gen-certs
-    go run -tags="sonic avx" ./cmd/server --cert certs/cert.pem --key certs/cert.key {{ARGS}}
+    go run -tags="sonic avx" ./cmd/server --cert certs/cert.pem --key certs/cert.key {{ ARGS }}
 
 [group('dev')]
 run-client *ARGS:
-    go run -tags="sonic avx" ./cmd/client {{ARGS}}
+    go run -tags="sonic avx" ./cmd/client {{ ARGS }}
 
 [group('dev')]
 run-tests:
     go test -v -cover ./...
+
+[group('dev')]
+run-checks:
+    #!/usr/bin/env bash
+    set -eu
+
+    # goimports: https://pkg.go.dev/golang.org/x/tools/cmd/goimports
+    if ! command -v goimports &> /dev/null; then go install golang.org/x/tools/cmd/goimports@latest; fi
+    goimports -d .
+
+    # golangci-lint: https://pkg.go.dev/github.com/golangci/golangci-lint
+    if ! command -v golangci-lint &> /dev/null; then go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; fi
+    golangci-lint run
+
+[group('dev')]
+run-checks-and-fix:
+    #!/usr/bin/env bash
+    set -eu
+
+    # goimports: https://pkg.go.dev/golang.org/x/tools/cmd/goimports
+    if ! command -v goimports &> /dev/null; then go install golang.org/x/tools/cmd/goimports@latest; fi
+    goimports -w .
+
+    # golangci-lint: https://pkg.go.dev/github.com/golangci/golangci-lint
+    if ! command -v golangci-lint &> /dev/null; then go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; fi
+    golangci-lint run --fix
+
+    # Format the justfile as well
+    just --fmt --unstable
 
 [group('build')]
 [doc('Needs a platform specific compiler. Example: CC="aarch64-linux-musl-gcc" just build-client-target goos=linux goarch=arm64')]
@@ -71,7 +100,7 @@ build-server:
     goreleaser build --snapshot --clean --id syftbox_server
 
 [group('build')]
-build-all: 
+build-all:
     goreleaser release --snapshot --clean
 
 [group('deploy')]

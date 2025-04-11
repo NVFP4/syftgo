@@ -163,7 +163,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		for _, err := range errs {
 			errStr += " " + err.Error()
 		}
-		return fmt.Errorf(errStr)
+		return errors.New(errStr)
 	}
 
 	return nil
@@ -243,12 +243,16 @@ func (s *Server) handleFileWrite(msg *ws.ClientMessage) {
 		return true
 	})
 
-	s.svc.Blob.Client().PutObject(context.Background(), &blob.PutObjectParams{
+	_, err := s.svc.Blob.Client().PutObject(context.Background(), &blob.PutObjectParams{
 		Key:  data.Path,
 		ETag: msg.Message.Id,
 		Body: bytes.NewReader(data.Content),
 		Size: data.Length,
 	})
+	if err != nil {
+		slog.Error("failed to put object", "error", err)
+		return
+	}
 }
 
 func (s *Server) checkPermission(user string, path string, access acl.AccessLevel) error {

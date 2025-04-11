@@ -28,8 +28,6 @@ func (sm *SyncManager) handleFileEvents(ctx context.Context) {
 
 			if strings.HasSuffix(path, ".request") || strings.HasSuffix(path, ".response") || strings.HasSuffix(path, "syftperm.yaml") || strings.HasSuffix(path, "rpc.schema.json") {
 				sm.writePriority(path)
-			} else {
-				// sm.handleEvent(ctx, event.Path)
 			}
 
 		case _, ok := <-sm.pollEvents:

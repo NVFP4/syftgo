@@ -103,7 +103,9 @@ func (a *App) Stop() error {
 	// Create a channel to signal when the app has exited
 	done := make(chan struct{})
 	go func() {
-		a.Process.Wait()
+		if err := a.Process.Wait(); err != nil {
+			slog.Error("app process wait failed", "error", err)
+		}
 		close(done)
 	}()
 

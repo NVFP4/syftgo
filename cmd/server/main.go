@@ -129,7 +129,9 @@ func loadConfig(cmd *cobra.Command) error {
 		}
 	}
 
-	viper.BindPFlag("data_dir", cmd.Flags().Lookup("dataDir"))
+	if err := viper.BindPFlag("data_dir", cmd.Flags().Lookup("dataDir")); err != nil {
+		return fmt.Errorf("failed to bind data_dir flag: %w", err)
+	}
 
 	// Set up environment variables
 	viper.SetEnvPrefix("SYFTBOX")
