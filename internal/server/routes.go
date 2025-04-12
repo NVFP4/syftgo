@@ -8,9 +8,8 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
-	"github.com/yashgorana/syftbox-go/internal/blob"
-	"github.com/yashgorana/syftbox-go/internal/datasite"
 	"github.com/yashgorana/syftbox-go/internal/server/auth"
+	"github.com/yashgorana/syftbox-go/internal/server/explorer"
 	"github.com/yashgorana/syftbox-go/internal/server/middlewares"
 	blobHandler "github.com/yashgorana/syftbox-go/internal/server/v1/blob"
 	datasiteHandler "github.com/yashgorana/syftbox-go/internal/server/v1/datasite"
@@ -20,16 +19,21 @@ import (
 	_ "embed"
 )
 
-//go:embed templates/install.sh
-var installScript string
-
 var jwtSecret = os.Getenv("SYFTBOX_JWT_SECRET")
 
-func SetupRoutes(hub *wsV1.WebsocketHub, svcBlob *blob.BlobService, svcDatasite *datasite.DatasiteService) http.Handler {
-	r := gin.Default()
+//go:embed templates/install.sh
+var installShell string
 
-	blob := blobHandler.New(svcBlob)
-	ds := datasiteHandler.New(svcDatasite)
+//go:embed templates/install.ps1
+var installPowershell string
+
+func SetupRoutes(svc *Services, hub *wsV1.WebsocketHub) http.Handler {
+	r := gin.Default()
+	r.MaxMultipartMemory = 8 << 20 // 8 MiB
+
+	blob := blobHandler.New(svc.Blob)
+	ds := datasiteHandler.New(svc.Datasite)
+	explorer := explorer.New(svc.Blob, svc.ACL)
 	auth := auth.New(auth.AuthConfig{
 		JwtSecret:      jwtSecret,
 		JwtExpiry:      168 * time.Hour, // 1 day
@@ -42,7 +46,9 @@ func SetupRoutes(hub *wsV1.WebsocketHub, svcBlob *blob.BlobService, svcDatasite 
 
 	r.GET("/", IndexHandler)
 	r.GET("/healthz", HealthHandler)
-	r.GET("/install.sh", InstallHeader)
+	r.GET("/install.sh", InstallShell)
+	r.GET("/install.ps1", InstallPowershell)
+	r.GET("/datasites/*filepath", explorer.Handler)
 	r.StaticFS("/releases", http.Dir("./releases"))
 
 	r.GET("/auth/login", auth.Login)
@@ -52,14 +58,17 @@ func SetupRoutes(hub *wsV1.WebsocketHub, svcBlob *blob.BlobService, svcDatasite 
 	v1.Use(middlewares.JwtAuth(jwtSecret)) // enforce auth on v1 routes
 	{
 		// blob
-		v1.GET("/blob/list", blob.List)
-		v1.GET("/blob/upload", blob.Upload)
-		v1.GET("/blob/download", blob.Download)
-		v1.POST("/blob/complete", blob.Complete)
+		v1.GET("/blob/list", blob.ListObjects)
+		v1.PUT("/blob/upload", blob.Upload)
+		v1.POST("/blob/upload/presigned", blob.UploadPresigned)
+		v1.POST("/blob/upload/multipart", blob.UploadMultipart)
+		v1.POST("/blob/upload/complete", blob.UploadComplete)
+		v1.POST("/blob/download", blob.DownloadObjectsPresigned)
+		v1.POST("/blob/delete", blob.DeleteObjects)
 
 		// datasite
 		v1.GET("/datasite/view", ds.GetView)
-		v1.POST("/datasite/download", ds.DownloadFiles)
+		// v1.POST("/datasite/download", ds.DownloadFiles)
 
 		// websocket events
 		v1.GET("/events", hub.WebsocketHandler)
@@ -91,10 +100,16 @@ func HealthHandler(ctx *gin.Context) {
 	})
 }
 
-func InstallHeader(ctx *gin.Context) {
+func InstallShell(ctx *gin.Context) {
 	ctx.Header("Content-Type", "application/x-sh")
 	ctx.Header("Content-Disposition", "attachment; filename=install.sh")
-	ctx.String(http.StatusOK, installScript)
+	ctx.String(http.StatusOK, installShell)
+}
+
+func InstallPowershell(ctx *gin.Context) {
+	ctx.Header("Content-Type", "application/x-powershell")
+	ctx.Header("Content-Disposition", "attachment; filename=install.ps1")
+	ctx.String(http.StatusOK, installPowershell)
 }
 
 func init() {

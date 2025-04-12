@@ -1,115 +1,184 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime"
-	"sync"
+	"strings"
 	"time"
 
-	"github.com/yashgorana/syftbox-go/internal/acl"
-	"github.com/yashgorana/syftbox-go/internal/blob"
-	"github.com/yashgorana/syftbox-go/internal/datasite"
-	"github.com/yashgorana/syftbox-go/internal/message"
+	"github.com/jmoiron/sqlx"
+	"github.com/yashgorana/syftbox-go/internal/db"
+	"github.com/yashgorana/syftbox-go/internal/server/acl"
+	"github.com/yashgorana/syftbox-go/internal/server/blob"
+	"github.com/yashgorana/syftbox-go/internal/server/datasite"
 	"github.com/yashgorana/syftbox-go/internal/server/v1/ws"
+	"github.com/yashgorana/syftbox-go/internal/syftmsg"
+	"golang.org/x/sync/errgroup"
 )
 
+// Server represents the main application server and its dependencies
 type Server struct {
 	config *Config
 	server *http.Server
+	db     *sqlx.DB
 	hub    *ws.WebsocketHub
-
-	blobSvc     *blob.BlobService
-	aclSvc      *acl.AclService
-	datasiteSvc *datasite.DatasiteService
+	svc    *Services
 }
 
+// New creates a new server instance with the provided configuration
 func New(config *Config) (*Server, error) {
-	aclSvc := acl.NewAclService()
-	blobSvc := blob.NewBlobService(config.Blob)
-	datasiteSvc := datasite.NewDatasiteService(blobSvc, aclSvc)
+	sqliteDb, err := db.NewSqliteDb(db.WithPath(config.DbPath))
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	services, err := NewServices(config, sqliteDb)
+	if err != nil {
+		return nil, fmt.Errorf("initialize services: %w", err)
+	}
 
 	hub := ws.NewHub()
-	httpHandler := SetupRoutes(hub, blobSvc, datasiteSvc)
+	httpHandler := SetupRoutes(services, hub)
 
 	return &Server{
-		config:      config,
-		blobSvc:     blobSvc,
-		aclSvc:      aclSvc,
-		datasiteSvc: datasiteSvc,
-		hub:         hub,
+		config: config,
+		db:     sqliteDb,
+		hub:    hub,
+		svc:    services,
 		server: &http.Server{
 			Addr:    config.Http.Addr,
 			Handler: httpHandler,
+			// Timeouts to prevent slow client attacks
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+			// Connection control
+			MaxHeaderBytes: 1 << 20, // 1 MB
 		},
 	}, nil
 }
 
 func (s *Server) Start(ctx context.Context) error {
 	slog.Info("syftgo server start")
-	defer slog.Info("syftgo server stop")
 
-	slog.Info("datasite service start")
-	if err := s.datasiteSvc.Init(ctx); err != nil {
-		return fmt.Errorf("datasite service start error: %w", err)
-	}
+	// Create errgroup with derived context
+	eg, egCtx := errgroup.WithContext(ctx)
 
-	go s.hub.Run(ctx)
-
-	go func() error {
-		if err := s.runHttpServer(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server start error", "error", err)
+	// Start HTTP server
+	eg.Go(func() error {
+		if err := s.runHttpServer(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		slog.Info("http server stopped")
 		return nil
-	}()
+	})
 
-	var workerWg sync.WaitGroup
-
-	go func() {
-		numWorkers := runtime.NumCPU()
-		workerWg.Add(numWorkers)
-		slog.Info("message handlers start", "count", numWorkers)
-
-		for range numWorkers {
-			go func() {
-				defer workerWg.Done()
-				s.handleSocketMessages(ctx)
-			}()
+	// Start services
+	eg.Go(func() error {
+		if err := s.svc.Start(egCtx); err != nil {
+			return fmt.Errorf("start services: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	<-ctx.Done()
-	workerWg.Wait()
-	slog.Info("syftgo shutdown signal")
-	if err := s.Stop(ctx); err != nil {
-		slog.Error("syftgo shutdown error", "error", err)
+	// Start websocket hub
+	eg.Go(func() error {
+		s.hub.Run(egCtx)
+		return nil
+	})
+
+	// Start socket message handlers
+	numWorkers := runtime.NumCPU()
+	slog.Info("message handlers start", "workers", numWorkers)
+	for range numWorkers {
+		eg.Go(func() error {
+			s.handleSocketMessages(egCtx)
+			return nil
+		})
+	}
+
+	// Launch goroutine to handle shutdown on context cancellation
+	eg.Go(func() error {
+		<-egCtx.Done()
+		slog.Info("context cancelled, starting shutdown")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := s.Stop(shutdownCtx); err != nil {
+			slog.Error("graceful shutdown failed", "error", err)
+			return err
+		}
+		return nil
+	})
+
+	// Wait for all goroutines to complete or error
+	if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("syftgo server failure", "error", err)
 		return err
 	}
+
+	slog.Info("syftgo server stop")
 	return nil
 }
 
 func (s *Server) Stop(ctx context.Context) error {
+	// Use a timeout for graceful shutdown
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	s.hub.Shutdown(ctx)
+	// Stop components in reverse order of startup
+	var errs []error
 
+	// Shutdown hub
+	s.hub.Shutdown(shutdownCtx)
+
+	// Shutdown HTTP server
 	if err := s.server.Shutdown(shutdownCtx); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("http server shutdown: %w", err))
 	}
+	slog.Info("http server stopped")
+
+	if err := s.svc.Shutdown(shutdownCtx); err != nil {
+		errs = append(errs, fmt.Errorf("stop services: %w", err))
+	}
+	slog.Info("services stopped")
+
+	// Close database connection
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("database close: %w", err))
+		}
+		slog.Info("database closed")
+	}
+
+	// Return combined errors if any
+	if len(errs) > 0 {
+		errStr := "shutdown errors:"
+		for _, err := range errs {
+			errStr += " " + err.Error()
+		}
+		return fmt.Errorf(errStr)
+	}
+
 	return nil
 }
 
 func (s *Server) runHttpServer() error {
 	if s.config.Http.CertFile != "" && s.config.Http.KeyFile != "" {
-		slog.Info("server start tls", "addr", s.config.Http.Addr, "cert", s.config.Http.CertFile, "key", s.config.Http.KeyFile)
+		slog.Info("server start https",
+			"addr", fmt.Sprintf("https://%s", s.config.Http.Addr),
+			"cert", s.config.Http.CertFile,
+			"key", s.config.Http.KeyFile,
+		)
 		return s.server.ListenAndServeTLS(s.config.Http.CertFile, s.config.Http.KeyFile)
 	} else {
-		slog.Info("server start http", "addr", s.config.Http.Addr)
+		slog.Info("server start http", "addr", fmt.Sprintf("http://%s", s.config.Http.Addr))
 		return s.server.ListenAndServe()
 	}
 }
@@ -128,7 +197,7 @@ func (s *Server) handleSocketMessages(ctx context.Context) {
 
 func (s *Server) onMessage(msg *ws.ClientMessage) {
 	switch msg.Message.Type {
-	case message.MsgFileWrite:
+	case syftmsg.MsgFileWrite:
 		s.handleFileWrite(msg)
 	// case message.MsgFileDelete:
 	// 	s.handleFileDelete(msg)
@@ -138,24 +207,22 @@ func (s *Server) onMessage(msg *ws.ClientMessage) {
 }
 
 func (s *Server) handleFileWrite(msg *ws.ClientMessage) {
-	data, _ := msg.Message.Data.(message.FileWrite)
+	data, _ := msg.Message.Data.(syftmsg.FileWrite)
 
 	from := msg.Info.User
 
-	// check permissions
-	ok, err := s.aclSvc.CanAccess(
-		&acl.User{ID: from, IsOwner: datasite.IsOwner(data.Path, from)},
-		&acl.File{Path: data.Path, Size: data.Length},
-		acl.AccessWrite,
-	)
-	if !ok || err != nil {
-		slog.Warn("FILE_WRITE permissions error", "msgId", msg.Message.Id, "from", from, "path", data.Path, "err", err)
-		errMsg := message.NewError(http.StatusForbidden, data.Path, "no permissions to write the file")
+	if err := s.checkPermission(from, data.Path, acl.AccessWrite); err != nil {
+		slog.Warn("write permission denied",
+			"msgId", msg.Message.Id,
+			"from", from,
+			"path", data.Path,
+			"err", err)
+		errMsg := syftmsg.NewError(http.StatusForbidden, data.Path, "permission denied for write operation")
 		s.hub.SendMessage(msg.ClientId, errMsg)
 		return
 	}
 
-	slog.Info("FILE_WRITE", "client", from, "msgId", msg.Message.Id, "path", data.Path, "size", data.Length)
+	slog.Info("ws file write", "client", from, "msgId", msg.Message.Id, "path", data.Path, "size", data.Length)
 
 	s.hub.BroadcastFiltered(msg.Message, func(info *ws.ClientInfo) bool {
 		to := info.User
@@ -163,12 +230,44 @@ func (s *Server) handleFileWrite(msg *ws.ClientMessage) {
 			return false
 		}
 
-		ok, err := s.aclSvc.CanAccess(&acl.User{ID: to, IsOwner: datasite.IsOwner(data.Path, to)}, &acl.File{Path: data.Path, Size: data.Length}, acl.AccessRead)
-		if !ok || err != nil {
+		if err := s.checkPermission(to, data.Path, acl.AccessRead); err != nil {
+			slog.Warn("read permission denied",
+				"msgId", msg.Message.Id,
+				"from", from,
+				"to", to,
+				"path", data.Path,
+				"err", err)
 			return false
 		}
+
 		return true
 	})
+
+	s.svc.Blob.Client().PutObject(context.Background(), &blob.PutObjectParams{
+		Key:  data.Path,
+		ETag: msg.Message.Id,
+		Body: bytes.NewReader(data.Content),
+		Size: data.Length,
+	})
+}
+
+func (s *Server) checkPermission(user string, path string, access acl.AccessLevel) error {
+	// todo remove hax
+	if isRpc(path) {
+		return nil
+	}
+	return s.svc.ACL.CanAccess(
+		&acl.User{ID: user, IsOwner: datasite.IsOwner(path, user)},
+		&acl.File{Path: path},
+		access,
+	)
+}
+
+func isRpc(path string) bool {
+	return strings.Contains(path, "/rpc/") &&
+		(strings.HasSuffix(path, ".request") ||
+			strings.HasSuffix(path, ".response") ||
+			strings.HasSuffix(path, "rpc.schema.json"))
 }
 
 // func (s *Server) handleFileDelete(msg *ws.ClientMessage) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yashgorana/syftbox-go/internal/message"
+	"github.com/yashgorana/syftbox-go/internal/syftmsg"
 )
 
 func (sm *SyncManager) handleFileEvents(ctx context.Context) {
@@ -26,7 +26,7 @@ func (sm *SyncManager) handleFileEvents(ctx context.Context) {
 				continue
 			}
 
-			if strings.HasSuffix(path, ".request") || strings.HasSuffix(path, ".response") || strings.HasSuffix(path, ".txt") || strings.HasSuffix(path, "rpc.schema.json") {
+			if strings.HasSuffix(path, ".request") || strings.HasSuffix(path, ".response") || strings.HasSuffix(path, "syftperm.yaml") || strings.HasSuffix(path, "rpc.schema.json") {
 				sm.writePriority(path)
 			} else {
 				// sm.handleEvent(ctx, event.Path)
@@ -43,10 +43,7 @@ func (sm *SyncManager) handleFileEvents(ctx context.Context) {
 
 func (sm *SyncManager) writePriority(path string) {
 	timeNow := time.Now()
-	// 1. as datasite path
-	dsPath := sm.datasite.ToDatasitePath(path)
 
-	// 2. get file info
 	fileInfo, err := getFileInfo(path)
 	if err != nil {
 		slog.Error("priority write stat error", "error", err, "path", path)
@@ -54,11 +51,14 @@ func (sm *SyncManager) writePriority(path string) {
 	}
 
 	timeTaken := timeNow.Sub(fileInfo.ModTime)
-	slog.Info("priority write", "path", dsPath, "size", fileInfo.Size, "etag", fileInfo.Etag, "watchLatency", timeTaken)
+	relPath := sm.datasite.RelativePath(path)
+	slog.Info("priority write", "path", relPath,
+		"size", fileInfo.Size,
+		"etag", fileInfo.Etag,
+		"watchLatency", timeTaken)
 
-	// 3. send rpc message
-	message := message.NewFileWrite(
-		dsPath.Relative,
+	message := syftmsg.NewFileWrite(
+		relPath,
 		fileInfo.Etag,
 		fileInfo.Size,
 		fileInfo.Content,

@@ -11,20 +11,20 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/yashgorana/syftbox-go/internal/message"
+	"github.com/yashgorana/syftbox-go/internal/syftmsg"
 )
 
 const (
-	pingPeriod     = 60 * time.Second
-	writeTimeout   = 10 * time.Second
+	pingPeriod     = 15 * time.Second
+	writeTimeout   = 20 * time.Second
 	shutdownReason = "shutdown"
 )
 
 // websocketClient represents a connected WebSocket client.
 type websocketClient struct {
 	Id     string
-	MsgRx  chan *message.Message
-	MsgTx  chan *message.Message
+	MsgRx  chan *syftmsg.Message
+	MsgTx  chan *syftmsg.Message
 	Closed chan struct{}
 
 	conn      *websocket.Conn
@@ -36,8 +36,8 @@ type websocketClient struct {
 func newWebsocketClient(conn *websocket.Conn) *websocketClient {
 	return &websocketClient{
 		Id:     "",
-		MsgRx:  make(chan *message.Message, 8),
-		MsgTx:  make(chan *message.Message, 8),
+		MsgRx:  make(chan *syftmsg.Message, 8),
+		MsgTx:  make(chan *syftmsg.Message, 8),
 		Closed: make(chan struct{}),
 		wsDone: make(chan struct{}),
 		conn:   conn,
@@ -81,7 +81,7 @@ func (c *websocketClient) readLoop(ctx context.Context) {
 		c.closeConnection(websocket.StatusNormalClosure, shutdownReason)
 	}()
 
-	var data *message.Message
+	var data *syftmsg.Message
 
 	for {
 		err := wsjson.Read(ctx, c.conn, &data)
@@ -108,10 +108,10 @@ func (c *websocketClient) readLoop(ctx context.Context) {
 }
 
 func (c *websocketClient) writeLoop(ctx context.Context) {
-	ticker := time.NewTicker(pingPeriod)
+	pingTicker := time.NewTicker(pingPeriod)
 	defer func() {
 		slog.Debug("wsclient writer shutdown", "id", c.Id)
-		ticker.Stop()
+		pingTicker.Stop()
 		c.wg.Done()
 		c.closeConnection(websocket.StatusNormalClosure, shutdownReason)
 	}()
@@ -130,7 +130,7 @@ func (c *websocketClient) writeLoop(ctx context.Context) {
 				return
 			}
 
-		case <-ticker.C:
+		case <-pingTicker.C:
 
 			// ping the client
 			ctxWrite, cancel := context.WithTimeout(ctx, writeTimeout)

@@ -12,13 +12,12 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/yashgorana/syftbox-go/internal/message"
+	"github.com/yashgorana/syftbox-go/internal/syftmsg"
 	"github.com/yashgorana/syftbox-go/internal/utils"
 )
 
 const (
-	pingPeriod     = 60 * time.Second
-	writeTimeout   = 10 * time.Second
+	writeTimeout   = 20 * time.Second
 	shutdownReason = "shutdown"
 )
 
@@ -31,8 +30,8 @@ type ClientInfo struct {
 type WebsocketClient struct {
 	Id     string
 	Info   *ClientInfo
-	MsgRx  chan *message.Message
-	MsgTx  chan *message.Message
+	MsgRx  chan *syftmsg.Message
+	MsgTx  chan *syftmsg.Message
 	Closed chan struct{}
 
 	conn      *websocket.Conn
@@ -45,8 +44,8 @@ func NewWebsocketClient(conn *websocket.Conn, info *ClientInfo) *WebsocketClient
 	return &WebsocketClient{
 		Id:     utils.TokenHex(3),
 		Info:   info,
-		MsgRx:  make(chan *message.Message, 8),
-		MsgTx:  make(chan *message.Message, 8),
+		MsgRx:  make(chan *syftmsg.Message, 8),
+		MsgTx:  make(chan *syftmsg.Message, 8),
 		Closed: make(chan struct{}),
 		wsDone: make(chan struct{}),
 		conn:   conn,
@@ -90,7 +89,7 @@ func (c *WebsocketClient) readLoop(ctx context.Context) {
 		c.closeConnection(websocket.StatusNormalClosure, shutdownReason)
 	}()
 
-	var data *message.Message
+	var data *syftmsg.Message
 
 	for {
 		err := wsjson.Read(ctx, c.conn, &data)
@@ -117,10 +116,8 @@ func (c *WebsocketClient) readLoop(ctx context.Context) {
 }
 
 func (c *WebsocketClient) writeLoop(ctx context.Context) {
-	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		slog.Debug("wsclient writer shutdown", "id", c.Id)
-		ticker.Stop()
 		c.wg.Done()
 		c.closeConnection(websocket.StatusNormalClosure, shutdownReason)
 	}()
@@ -136,18 +133,6 @@ func (c *WebsocketClient) writeLoop(ctx context.Context) {
 
 			if err != nil {
 				slog.Error("wsclient writer", "error", err, "id", c.Id)
-				return
-			}
-
-		case <-ticker.C:
-
-			// ping the client
-			ctxWrite, cancel := context.WithTimeout(ctx, writeTimeout)
-			err := c.conn.Ping(ctxWrite)
-			cancel()
-
-			if err != nil {
-				slog.Error("wsclient writer ping", "error", err, "id", c.Id)
 				return
 			}
 

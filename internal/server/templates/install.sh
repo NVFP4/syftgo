@@ -179,16 +179,18 @@ prompt_run_client() {
 uninstall_old_version() {
     if check_cmd syftbox
     then
-        info "Found old version of SyftBox. Uninstalling..."
         local path=$(command -v syftbox)
+        info "Found old version of SyftBox ($path). Removing..."
 
-        # if syftbox is symlink, uninstall using uv
-        if [ -L "$path" ]
-        then
-            uv tool uninstall -q --force syftbox
-        else
-            rm -f "$path"
+        if check_cmd uv && uv tool list 2>/dev/null | grep -q syftbox
+        then uv tool uninstall -q syftbox
+        elif check_cmd pip && pip list 2>/dev/null | grep -q syftbox
+        then pip uninstall -y syftbox
         fi
+
+        # just yank the path to confirm
+        rm -f "$path"
+        rm -f "$HOME/.local/bin/syftbox"
     fi
 }
 
@@ -202,7 +204,8 @@ pre_install() {
 }
 
 post_install() {
-    success "Installation completed!"
+    success "Installation completed! $(~/.local/bin/syftbox -v)"
+
     if [ $RUN_CLIENT -eq 1 ]
     then run_client
     elif [ $ASK_RUN_CLIENT -eq 1 ]
