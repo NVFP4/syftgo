@@ -29,6 +29,7 @@ blob:
 	// Create a dummy command
 	cmd := &cobra.Command{}
 	cmd.Flags().String("config", "", "Path to config file")
+	cmd.Flags().String("dataDir", ".data", "Data directory path")
 
 	// Set the dummy config file path
 	if err := cmd.Flags().Set("config", dummyConfigFile); err != nil {
